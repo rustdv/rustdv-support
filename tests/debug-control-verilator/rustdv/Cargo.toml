@@ -1,0 +1,21 @@
+[package]
+name = "rustdv-debug-control-verilator-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+rustdv.workspace = true
+rustdv-debug.workspace = true
+rustdv-mcp-verilator.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+rustdv-vpi-stubs.workspace = true

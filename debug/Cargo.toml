@@ -1,0 +1,12 @@
+[package]
+name = "rustdv-debug"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend-neutral live debug requests and watch statistics for RustDV"
+readme = "README.md"
+
+[dependencies]
+serde.workspace = true

@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace:
+    name: Workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
+      - name: Package transport-neutral crate
+        run: cargo package -p rustdv-debug --locked
+
+  debug-control-verilator:
+    name: Debug control (${{ matrix.os }}, Verilator 5.050)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out rustdv-support
+        uses: actions/checkout@v7
+
+      - name: Check out pinned RustDV core
+        uses: actions/checkout@v7
+        with:
+          repository: teabone113/rustdv
+          ref: 2b83c4e175d997e8c143a6b86e136db96407faa0
+          path: rustdv-core
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Verilator build dependencies
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              autoconf flex bison help2man pkg-config libfl-dev \
+              zlib1g-dev liblz4-dev curl ca-certificates
+          else
+            brew install autoconf flex bison help2man pkg-config lz4
+            echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+            echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Cache Verilator 5.050
+        id: verilator-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/verilator-5.050
+          key: verilator-5.050-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build pinned Verilator
+        if: steps.verilator-cache.outputs.cache-hit != 'true'
+        run: bash rustdv-core/ci/install-verilator.sh "$RUNNER_TEMP/verilator-5.050"
+
+      - name: Select and verify pinned revisions
+        run: |
+          expected_core=2b83c4e175d997e8c143a6b86e136db96407faa0
+          echo "$RUNNER_TEMP/verilator-5.050/bin" >> "$GITHUB_PATH"
+          got="$($RUNNER_TEMP/verilator-5.050/bin/verilator --version | awk '{print $2}')"
+          test "$got" = 5.050
+          echo "rustdv-support SHA: $(git rev-parse HEAD)"
+          echo "rustdv core SHA: $(git -C rustdv-core rev-parse HEAD)"
+          test "$(git -C rustdv-core rev-parse HEAD)" = "$expected_core"
+          grep -q "rev=$expected_core#$expected_core" Cargo.lock
+          echo "Verilator version: $($RUNNER_TEMP/verilator-5.050/bin/verilator --version)"
+
+      - name: Run MCP debug-control INSPECT smoke
+        env:
+          RUSTDV_ROOT: ${{ github.workspace }}/rustdv-core
+        run: bash tests/debug-control-verilator/run.sh
+
+      - name: Verify smoke preserved the pinned lockfile
+        run: |
+          expected_core=2b83c4e175d997e8c143a6b86e136db96407faa0
+          git diff --exit-code -- Cargo.lock
+          grep -q "rev=$expected_core#$expected_core" Cargo.lock
