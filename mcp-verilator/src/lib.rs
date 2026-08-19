@@ -7,6 +7,14 @@
 //! not create another scheduler. Held pauses use bounded wall-clock waits and
 //! fail open on raw channel disconnect or pause-inactivity lease expiry.
 
+mod fst_recording;
+
+pub use fst_recording::{
+    TraceChange, TraceChangePage, TraceRecordingConfig, TraceRecordingStatus, TraceResponse,
+    TraceSnapshot, TraceSummary, TraceValueAt,
+};
+use fst_recording::{TraceClient, TraceRequest, TraceSession};
+
 use axum::Router;
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use rustdv::{AnyHandle, HierarchyHandle};
@@ -17,6 +25,7 @@ use rustdv_debug::{
 use serde::Deserialize;
 use std::{
     net::{SocketAddr, TcpListener},
+    ops::{Deref, DerefMut},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -49,8 +58,41 @@ pub struct McpServer {
     worker: Option<JoinHandle<()>>,
 }
 
+/// Both sides of the simulator-thread services used by the Verilator MCP.
+#[derive(Clone)]
+pub struct VerilatorDebugClient {
+    debug: DebugClient,
+    trace: TraceClient,
+}
+
+/// Client accepted by [`McpServer`]. A plain [`DebugClient`] remains accepted
+/// for transports which do not enable the Verilator/FST recording backend.
+pub struct McpClient {
+    debug: DebugClient,
+    trace: Option<TraceClient>,
+}
+
+impl From<DebugClient> for McpClient {
+    fn from(debug: DebugClient) -> Self {
+        Self { debug, trace: None }
+    }
+}
+
+impl From<VerilatorDebugClient> for McpClient {
+    fn from(client: VerilatorDebugClient) -> Self {
+        Self {
+            debug: client.debug,
+            trace: Some(client.trace),
+        }
+    }
+}
+
 impl McpServer {
-    pub fn start(client: DebugClient, config: McpServerConfig) -> Result<Self, DebugError> {
+    pub fn start(
+        client: impl Into<McpClient>,
+        config: McpServerConfig,
+    ) -> Result<Self, DebugError> {
+        let client = client.into();
         if !config.bind.ip().is_loopback() {
             return Err(DebugError::new(
                 "MCP server bind address must be a loopback address",
@@ -82,7 +124,8 @@ impl McpServer {
                     };
 
                     let handler = DebugMcpHandler {
-                        client,
+                        client: client.debug,
+                        trace: client.trace,
                         request_timeout: config.request_timeout,
                     };
                     let service: StreamableHttpService<DebugMcpHandler, LocalSessionManager> =
@@ -129,6 +172,7 @@ impl Drop for McpServer {
 #[derive(Clone)]
 struct DebugMcpHandler {
     client: DebugClient,
+    trace: Option<TraceClient>,
     request_timeout: Duration,
 }
 
@@ -140,6 +184,78 @@ impl DebugMcpHandler {
             Err(error) => serde_json::to_string_pretty(&error)
                 .unwrap_or_else(|_| format!(r#"{{"error":"{error}"}}"#)),
         }
+    }
+
+    fn trace_json(&self, request: TraceRequest) -> String {
+        let result = self.trace_request(request);
+        match result {
+            Ok(response) => serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|error| format!(r#"{{"error":"{error}"}}"#)),
+            Err(error) => serde_json::to_string_pretty(&error)
+                .unwrap_or_else(|_| format!(r#"{{"error":"{error}"}}"#)),
+        }
+    }
+
+    fn trace_request(&self, request: TraceRequest) -> Result<TraceResponse, DebugError> {
+        let trace = self
+            .trace
+            .as_ref()
+            .ok_or_else(|| DebugError::new("runtime FST recording is not enabled for this MCP"))?;
+        // FST requests use a separate Verilator-specific channel. Touching
+        // the neutral control session first makes active trace work renew the
+        // held-pause lease exactly as live VPI requests do.
+        let _ = self
+            .client
+            .request_timeout(DebugRequest::ControlStatus, self.request_timeout)?;
+        trace.request_timeout(request, self.request_timeout)
+    }
+
+    fn recording_json(&self, trace: TraceRequest, fallback: DebugRequest) -> String {
+        if self.trace.is_some() {
+            self.trace_json(trace)
+        } else {
+            self.request_json(fallback)
+        }
+    }
+
+    fn status_json(&self) -> String {
+        let debug = match self
+            .client
+            .request_timeout(DebugRequest::Status, self.request_timeout)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return serde_json::to_string_pretty(&error)
+                    .unwrap_or_else(|_| format!(r#"{{"error":"{error}"}}"#))
+            }
+        };
+        if self.trace.is_none() {
+            return serde_json::to_string_pretty(&debug)
+                .unwrap_or_else(|error| format!(r#"{{"error":"{error}"}}"#));
+        }
+        let trace = match self.trace_request(TraceRequest::Summary) {
+            Ok(TraceResponse::Summary(summary)) => summary,
+            Ok(_) => return r#"{"error":"FST summary returned the wrong response"}"#.to_owned(),
+            Err(error) => {
+                return serde_json::to_string_pretty(&error)
+                    .unwrap_or_else(|_| format!(r#"{{"error":"{error}"}}"#))
+            }
+        };
+        let mut value = serde_json::to_value(debug)
+            .unwrap_or_else(|error| serde_json::json!({"error": error.to_string()}));
+        if let Some(status) = value
+            .get_mut("value")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            status.insert("recordings".to_owned(), serde_json::json!(trace.recordings));
+            status.insert(
+                "trace".to_owned(),
+                serde_json::to_value(trace)
+                    .unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
+            );
+        }
+        serde_json::to_string_pretty(&value)
+            .unwrap_or_else(|error| format!(r#"{{"error":"{error}"}}"#))
     }
 }
 
@@ -183,8 +299,14 @@ struct WatchNameParameters {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RecordingStartParameters {
     name: String,
+    #[serde(default)]
     signals: Vec<String>,
+    #[serde(default = "default_recording_capacity")]
     capacity: usize,
+}
+
+fn default_recording_capacity() -> usize {
+    4096
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -199,6 +321,52 @@ struct RecordingGetParameters {
     cursor: Option<u64>,
     #[serde(default = "default_recording_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RecordingHierarchyParameters {
+    name: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default = "default_depth")]
+    max_depth: usize,
+    #[serde(default = "default_max_results")]
+    max_results: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RecordingValueParameters {
+    name: String,
+    signal: String,
+    time_steps: u64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RecordingChangesParameters {
+    name: String,
+    signal: String,
+    #[serde(default)]
+    start_time_steps: Option<u64>,
+    #[serde(default)]
+    end_time_steps: Option<u64>,
+    #[serde(default)]
+    cursor: Option<u64>,
+    #[serde(default = "default_recording_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RecordingSnapshotParameters {
+    name: String,
+    #[serde(default)]
+    scope: String,
+    time_steps: u64,
+    #[serde(default = "default_snapshot_signals")]
+    max_signals: usize,
+}
+
+fn default_snapshot_signals() -> usize {
+    256
 }
 
 fn default_recording_limit() -> usize {
@@ -225,7 +393,7 @@ impl DebugMcpHandler {
         description = "Return live simulator time, poll count, DUT root, watch and recording counts, and control state"
     )]
     fn simulation_status(&self) -> String {
-        self.request_json(DebugRequest::Status)
+        self.status_json()
     }
 
     #[tool(description = "List scopes and signals below a DUT hierarchy path")]
@@ -285,7 +453,9 @@ impl DebugMcpHandler {
         self.request_json(DebugRequest::RemoveWatch { name })
     }
 
-    #[tool(description = "Start a bounded change-only recording of explicit signals")]
+    #[tool(
+        description = "Start runtime-gated all-signal FST capture; signals optionally define the backward-compatible default projection"
+    )]
     fn start_recording(
         &self,
         Parameters(RecordingStartParameters {
@@ -294,11 +464,18 @@ impl DebugMcpHandler {
             capacity,
         }): Parameters<RecordingStartParameters>,
     ) -> String {
-        self.request_json(DebugRequest::StartRecording {
-            name,
-            signals,
-            capacity,
-        })
+        self.recording_json(
+            TraceRequest::Start {
+                name: name.clone(),
+                signals: signals.clone(),
+                capacity,
+            },
+            DebugRequest::StartRecording {
+                name,
+                signals,
+                capacity,
+            },
+        )
     }
 
     #[tool(description = "Return status and overflow counters for one recording")]
@@ -306,7 +483,10 @@ impl DebugMcpHandler {
         &self,
         Parameters(RecordingNameParameters { name }): Parameters<RecordingNameParameters>,
     ) -> String {
-        self.request_json(DebugRequest::RecordingStatus { name })
+        self.recording_json(
+            TraceRequest::Status { name: name.clone() },
+            DebugRequest::RecordingStatus { name },
+        )
     }
 
     #[tool(description = "Read one bounded page of recording samples by monotonic cursor")]
@@ -318,11 +498,18 @@ impl DebugMcpHandler {
             limit,
         }): Parameters<RecordingGetParameters>,
     ) -> String {
-        self.request_json(DebugRequest::GetRecording {
-            name,
-            cursor,
-            limit,
-        })
+        self.recording_json(
+            TraceRequest::Get {
+                name: name.clone(),
+                cursor,
+                limit,
+            },
+            DebugRequest::GetRecording {
+                name,
+                cursor,
+                limit,
+            },
+        )
     }
 
     #[tool(description = "Stop sampling one recording while retaining its history")]
@@ -330,7 +517,10 @@ impl DebugMcpHandler {
         &self,
         Parameters(RecordingNameParameters { name }): Parameters<RecordingNameParameters>,
     ) -> String {
-        self.request_json(DebugRequest::StopRecording { name })
+        self.recording_json(
+            TraceRequest::Stop { name: name.clone() },
+            DebugRequest::StopRecording { name },
+        )
     }
 
     #[tool(description = "Remove one recording and its retained history")]
@@ -338,7 +528,97 @@ impl DebugMcpHandler {
         &self,
         Parameters(RecordingNameParameters { name }): Parameters<RecordingNameParameters>,
     ) -> String {
-        self.request_json(DebugRequest::RemoveRecording { name })
+        self.recording_json(
+            TraceRequest::Remove { name: name.clone() },
+            DebugRequest::RemoveRecording { name },
+        )
+    }
+
+    #[tool(description = "List scopes and signals retained in an FST recording")]
+    fn recording_hierarchy(
+        &self,
+        Parameters(RecordingHierarchyParameters {
+            name,
+            scope,
+            max_depth,
+            max_results,
+        }): Parameters<RecordingHierarchyParameters>,
+    ) -> String {
+        self.trace_json(TraceRequest::Hierarchy {
+            name,
+            scope,
+            max_depth,
+            max_results,
+        })
+    }
+
+    #[tool(
+        description = "Return one recorded signal's most recent value at or before an exact simulation time"
+    )]
+    fn recording_value_at(
+        &self,
+        Parameters(RecordingValueParameters {
+            name,
+            signal,
+            time_steps,
+        }): Parameters<RecordingValueParameters>,
+    ) -> String {
+        self.trace_json(TraceRequest::ValueAt {
+            name,
+            signal,
+            time_steps,
+        })
+    }
+
+    #[tool(
+        description = "Return a bounded page of changes for one signal in a recorded time range"
+    )]
+    fn recording_changes(
+        &self,
+        Parameters(RecordingChangesParameters {
+            name,
+            signal,
+            start_time_steps,
+            end_time_steps,
+            cursor,
+            limit,
+        }): Parameters<RecordingChangesParameters>,
+    ) -> String {
+        self.trace_json(TraceRequest::Changes {
+            name,
+            signal,
+            start_time_steps,
+            end_time_steps,
+            cursor,
+            limit,
+        })
+    }
+
+    #[tool(
+        description = "Return a bounded scope snapshot from a recording at an exact simulation time"
+    )]
+    fn recording_snapshot(
+        &self,
+        Parameters(RecordingSnapshotParameters {
+            name,
+            scope,
+            time_steps,
+            max_signals,
+        }): Parameters<RecordingSnapshotParameters>,
+    ) -> String {
+        self.trace_json(TraceRequest::Snapshot {
+            name,
+            scope,
+            time_steps,
+            max_signals,
+        })
+    }
+
+    #[tool(
+        description = "Return runtime FST capability, active recording, retained bytes, and configured capture limits"
+    )]
+    fn recording_backend_status(&self) -> String {
+        self.trace_json(TraceRequest::Summary)
     }
 
     #[tool(description = "Return the current pause, run-until, or termination state")]
@@ -393,6 +673,35 @@ pub enum DebugServiceExit {
     ControllerDisconnected,
 }
 
+/// Simulator-thread state for live VPI debug plus optional private FST
+/// recording. Dereferencing exposes the backend-neutral [`DebugSession`].
+pub struct VerilatorDebugSession<P> {
+    debug: DebugSession<P>,
+    trace: TraceSession,
+}
+
+impl<P> Deref for VerilatorDebugSession<P> {
+    type Target = DebugSession<P>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.debug
+    }
+}
+
+impl<P> DerefMut for VerilatorDebugSession<P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.debug
+    }
+}
+
+impl Deref for VerilatorDebugClient {
+    type Target = DebugClient;
+
+    fn deref(&self) -> &Self::Target {
+        &self.debug
+    }
+}
+
 fn service_current_stable_point<P: SignalProvider>(
     session: &mut DebugSession<P>,
     paused_wait: Duration,
@@ -405,42 +714,107 @@ fn service_current_stable_point<P: SignalProvider>(
     directive
 }
 
+/// Internal service contract implemented by the legacy neutral session and
+/// by the Verilator session which additionally owns runtime FST capture.
+pub trait VerilatorServiceSession {
+    fn service_stable_point(&mut self, paused_wait: Duration) -> DebugDirective;
+    fn service_controller_connected(&self) -> bool;
+    fn service_control_status(&self) -> rustdv_debug::ControlStatus;
+    fn service_next_deadline_steps(&self) -> Option<u64>;
+    fn service_shutdown(&mut self);
+}
+
+impl<P: SignalProvider> VerilatorServiceSession for DebugSession<P> {
+    fn service_stable_point(&mut self, paused_wait: Duration) -> DebugDirective {
+        service_current_stable_point(self, paused_wait)
+    }
+
+    fn service_controller_connected(&self) -> bool {
+        self.controller_connected()
+    }
+
+    fn service_control_status(&self) -> rustdv_debug::ControlStatus {
+        self.control_status()
+    }
+
+    fn service_next_deadline_steps(&self) -> Option<u64> {
+        None
+    }
+
+    fn service_shutdown(&mut self) {}
+}
+
+impl<P: SignalProvider> VerilatorServiceSession for VerilatorDebugSession<P> {
+    fn service_stable_point(&mut self, paused_wait: Duration) -> DebugDirective {
+        let time = rustdv::sim_time_steps();
+        let mut directive = self.debug.poll(time);
+        self.trace.poll(time);
+        while directive == DebugDirective::Hold {
+            directive = self.debug.poll_wait(time, paused_wait);
+            self.trace.poll(time);
+        }
+        directive
+    }
+
+    fn service_controller_connected(&self) -> bool {
+        self.debug.controller_connected()
+    }
+
+    fn service_control_status(&self) -> rustdv_debug::ControlStatus {
+        self.debug.control_status()
+    }
+
+    fn service_next_deadline_steps(&self) -> Option<u64> {
+        self.trace.next_deadline_steps()
+    }
+
+    fn service_shutdown(&mut self) {
+        self.trace.stop_active(rustdv::sim_time_steps());
+    }
+}
+
 /// Service MCP requests only at settled RustDV ReadOnly points.
 ///
 /// No scheduler is created here. Running waits compose RustDV's existing
 /// `next_time_step` and `Timer`; pause holds the current ReadOnly callback and
 /// uses bounded wall-clock waits. Raw channel disconnect fails open immediately;
 /// an HTTP controller that vanishes is released by the pause inactivity lease.
-pub async fn run_verilator_debug_service<P: SignalProvider>(
-    session: &mut DebugSession<P>,
+pub async fn run_verilator_debug_service<S: VerilatorServiceSession>(
+    session: &mut S,
 ) -> DebugServiceExit {
     const PAUSED_WAIT: Duration = Duration::from_millis(10);
     loop {
-        let directive = if rustdv::sim::phase::current_phase()
-            == rustdv::sim::phase::SimPhase::ReadOnly
-        {
-            // A RustDV trigger continuation may already be executing in the
-            // settled ReadOnly callback. Reuse that stable point instead of
-            // illegally awaiting a second ReadOnly callback from inside it.
-            service_current_stable_point(session, PAUSED_WAIT)
-        } else {
-            rustdv::service_read_only(|| service_current_stable_point(session, PAUSED_WAIT)).await
-        };
+        let directive =
+            if rustdv::sim::phase::current_phase() == rustdv::sim::phase::SimPhase::ReadOnly {
+                // A RustDV trigger continuation may already be executing in the
+                // settled ReadOnly callback. Reuse that stable point instead of
+                // illegally awaiting a second ReadOnly callback from inside it.
+                session.service_stable_point(PAUSED_WAIT)
+            } else {
+                rustdv::service_read_only(|| session.service_stable_point(PAUSED_WAIT)).await
+            };
 
-        if !session.controller_connected() {
+        if !session.service_controller_connected() {
+            session.service_shutdown();
             return DebugServiceExit::ControllerDisconnected;
         }
         if directive == DebugDirective::Terminate {
+            session.service_shutdown();
             return DebugServiceExit::Terminated;
         }
 
         let now = rustdv::sim_time_steps();
-        let status = session.control_status();
-        let deadline = match status.mode {
+        let status = session.service_control_status();
+        let control_deadline = match status.mode {
             ControlMode::RunUntilTime => status.target_time_steps,
             ControlMode::RunUntilPredicate => status.timeout_time_steps,
             ControlMode::Running | ControlMode::Paused | ControlMode::Terminated => None,
         };
+        let trace_deadline = session.service_next_deadline_steps();
+        let deadline = [control_deadline, trace_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         if let Some(steps) = deadline
             .map(|deadline| deadline.saturating_sub(now))
             .filter(|steps| *steps > 0)
@@ -596,15 +970,52 @@ impl SignalProvider for VerilatorSignalProvider {
 
 pub fn verilator_debug_session(
     root: HierarchyHandle,
-) -> (DebugSession<VerilatorSignalProvider>, DebugClient) {
-    DebugSession::new(VerilatorSignalProvider::new(root))
+) -> (
+    VerilatorDebugSession<VerilatorSignalProvider>,
+    VerilatorDebugClient,
+) {
+    verilator_debug_session_with_configs(
+        root,
+        DebugSessionConfig::default(),
+        TraceRecordingConfig::default(),
+    )
+    .expect("default Verilator debug configuration must be valid")
 }
 
 pub fn verilator_debug_session_with_config(
     root: HierarchyHandle,
     config: DebugSessionConfig,
-) -> Result<(DebugSession<VerilatorSignalProvider>, DebugClient), DebugError> {
-    DebugSession::with_config(VerilatorSignalProvider::new(root), config)
+) -> Result<
+    (
+        VerilatorDebugSession<VerilatorSignalProvider>,
+        VerilatorDebugClient,
+    ),
+    DebugError,
+> {
+    verilator_debug_session_with_configs(root, config, TraceRecordingConfig::default())
+}
+
+pub fn verilator_debug_session_with_configs(
+    root: HierarchyHandle,
+    debug_config: DebugSessionConfig,
+    trace_config: TraceRecordingConfig,
+) -> Result<
+    (
+        VerilatorDebugSession<VerilatorSignalProvider>,
+        VerilatorDebugClient,
+    ),
+    DebugError,
+> {
+    let (debug, debug_client) =
+        DebugSession::with_config(VerilatorSignalProvider::new(root), debug_config)?;
+    let (trace, trace_client) = TraceSession::new(trace_config)?;
+    Ok((
+        VerilatorDebugSession { debug, trace },
+        VerilatorDebugClient {
+            debug: debug_client,
+            trace: trace_client,
+        },
+    ))
 }
 
 #[cfg(test)]

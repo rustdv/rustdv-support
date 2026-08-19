@@ -13,8 +13,8 @@ executor, phases, and simulator backends remain in `rustdv` itself.
   and asynchronous simulation-control layer. It has no RustDV or VPI
   dependency.
 - [`rustdv-mcp-verilator`](mcp-verilator/) exposes those operations through a
-  loopback-only streamable-HTTP MCP server and adapts Verilator VPI handles to
-  `rustdv-debug`.
+  loopback-only streamable-HTTP MCP server, adapts Verilator VPI handles to
+  `rustdv-debug`, and provides runtime-gated all-signal FST history.
 
 The MCP transport never owns or touches a VPI handle. Worker threads submit
 bounded requests; the simulator thread services them at RustDV's settled
@@ -28,16 +28,41 @@ The Verilator server exposes:
 - `add_watch`, `list_watches`, and `remove_watch`
 - `start_recording`, `recording_status`, `get_recording`,
   `stop_recording`, and `remove_recording`
+- `recording_hierarchy`, `recording_value_at`, `recording_changes`,
+  `recording_snapshot`, and `recording_backend_status`
 - `control_status`, `pause_simulation`, `resume_simulation`,
   `run_until_time`, `run_until_predicate`, and `terminate_simulation`
 
-Watch count, signals per watch, recording count, signals per recording, ring
-capacity, request work, and response sizes are configurable and bounded.
-Recordings are change-only rings with simulation timestamps and monotonic
-cursors. Watches, recordings, and run-until predicates share one provider
-snapshot per stable simulation time. Paused services use bounded wall-clock
-waits, fail open if every client disconnects, and also have a configurable
-inactivity lease.
+`rustdv-debug` remains simulator- and trace-format-neutral: it contains no
+Verilator, VPI, FST, or temporary-file types. Watches and run-until predicates
+use VPI and share one provider snapshot per stable simulation time. Paused
+services use bounded wall-clock waits, fail open if every client disconnects,
+and also have a configurable inactivity lease.
+
+## Verilator FST recording
+
+The existing recording tools now control a private all-signal FST capture in a
+trace-capable Verilator build. An optional `signals` list defines the
+backward-compatible change-only projection returned by `get_recording`; it
+does not limit what is physically captured. The additional history tools query
+the same captured trace for hierarchy, values, changes, and snapshots.
+
+The FST is an internal backing store rather than a user waveform artifact. It
+is created in a restricted temporary directory only when recording starts,
+never returned to an MCP client, deleted by `remove_recording`, and removed
+with the session. Active history queries rotate private segments at the same
+settled time; status polling does not rotate or consume a segment.
+
+`TraceRecordingConfig` bounds recordings, projected signals, indexed
+hierarchy, decoded events and bytes, response sizes, temporary files, capture
+duration, and active-query segments. Limit-triggered stops and reasons are
+reported through status. Start, flush, stop, and automatic deadlines are
+serviced synchronously at RustDV's settled ReadOnly point.
+
+The simulator must be built in RustDV `record` mode (`--trace-fst`). `fast`
+mode remains completely uninstrumented; recording calls return a structured
+unsupported-capability error instead of silently falling back to thousands of
+VPI reads.
 
 The server is intentionally unauthenticated and therefore rejects non-loopback
 bind addresses.
@@ -48,30 +73,33 @@ The normal workspace gate is:
 
 ```sh
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 ```
 
 The real integration gate requires Verilator 5.050 and a RustDV checkout with
-the settled service API and INSPECT mode:
+the settled service and runtime trace APIs:
 
 ```sh
 RUSTDV_ROOT=/path/to/rustdv \
   bash tests/debug-control-verilator/run.sh
 ```
 
-It drives the complete controller flow through actual HTTP/MCP calls, checks
-exact time and predicate stops, recording history, pause/resume/terminate, and
-proves that INSPECT mode emits no FST.
+It first proves that a FAST executable rejects recording, then drives 33 real
+HTTP/MCP calls against a trace-capable build. The test covers exact time and
+predicate stops, explicit-signal projection, an internal signal unavailable
+through VPI, automatic duration limiting, history boundaries after stop,
+pause/resume/terminate, private-file cleanup, and lockfile preservation.
 
 ## Dependency status
 
-The workspace temporarily pins an exact commit from the RustDV contribution
-branch because the required core API is not in a tagged release yet. Once the
-core change is merged and released, this repository should switch to the
-released RustDV version before publishing `rustdv-mcp-verilator` to crates.io.
+The workspace temporarily pins the exact head of
+[`rustdv/rustdv#10`](https://github.com/rustdv/rustdv/pull/10) because the
+required core API is not in a tagged release yet. Once that change is merged
+and released, this repository should switch to the released RustDV version
+before publishing `rustdv-mcp-verilator` to crates.io.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for repository boundaries and test
 requirements.
