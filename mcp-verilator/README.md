@@ -21,5 +21,9 @@ service API. The unauthenticated server accepts loopback bind addresses only.
 
 Recording and query resources are bounded. The configured recording byte
 limit is a post-flush stop threshold, so the active segment may overshoot it by
-the trace data emitted between checks; status reports the observed bytes and
-the limit-triggered stop reason.
+the trace data emitted between checks; exact duration and segment limits still
+terminate capture independently. Status reports observed bytes and the
+limit-triggered stop reason. The legacy change-only projection folds each
+closed segment into a fixed-capacity ring with a per-value width bound;
+filtered value/change/snapshot queries use separate total scan and decoded-byte
+budgets.

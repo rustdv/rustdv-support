@@ -46,7 +46,12 @@ pub struct TraceRecordingConfig {
     pub max_snapshot_signals: usize,
     pub max_changes_per_query: usize,
     pub max_changes_scanned: usize,
+    /// Total decoded-value budget for filtered history queries.
     pub max_decoded_bytes_per_query: usize,
+    /// Maximum width, in encoded bytes, of one value retained by the
+    /// streaming legacy projection. Projection work scans each newly closed
+    /// segment once, but retains only the configured recording ring.
+    pub max_projected_value_bytes: usize,
     pub max_segments_per_recording: usize,
     /// Stop threshold checked after flushing the active FST. The file can
     /// exceed this value by data emitted since the preceding check.
@@ -72,6 +77,7 @@ impl Default for TraceRecordingConfig {
             max_changes_per_query: 4096,
             max_changes_scanned: 1_000_000,
             max_decoded_bytes_per_query: 64 * 1024 * 1024,
+            max_projected_value_bytes: 1024 * 1024,
             max_segments_per_recording: 64,
             max_bytes_per_recording: 512 * 1024 * 1024,
             max_duration_steps: 100_000_000,
@@ -95,6 +101,7 @@ impl TraceRecordingConfig {
             || self.max_changes_per_query == 0
             || self.max_changes_scanned == 0
             || self.max_decoded_bytes_per_query == 0
+            || self.max_projected_value_bytes == 0
             || self.max_segments_per_recording == 0
             || self.max_bytes_per_recording == 0
             || self.max_duration_steps == 0
@@ -151,6 +158,7 @@ pub struct TraceSummary {
     pub max_changes_per_query: usize,
     pub max_changes_scanned: usize,
     pub max_decoded_bytes_per_query: usize,
+    pub max_projected_value_bytes: usize,
     pub max_segments_per_recording: usize,
     pub limit_check_interval_steps: u64,
 }
@@ -1178,6 +1186,7 @@ impl TraceSession {
             max_changes_per_query: self.config.max_changes_per_query,
             max_changes_scanned: self.config.max_changes_scanned,
             max_decoded_bytes_per_query: self.config.max_decoded_bytes_per_query,
+            max_projected_value_bytes: self.config.max_projected_value_bytes,
             max_segments_per_recording: self.config.max_segments_per_recording,
             limit_check_interval_steps: self.config.limit_check_interval_steps,
         })
@@ -1250,7 +1259,7 @@ impl TraceSession {
                 &mut recording.next_cursor,
                 &mut recording.dropped,
                 recording.spec.capacity,
-                self.config.max_decoded_bytes_per_query,
+                self.config.max_projected_value_bytes,
             )?;
             recording.projection_materialized_segments = recording.closed_segments.len();
             recording.retained = recording.projection_samples.len();

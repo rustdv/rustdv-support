@@ -57,9 +57,15 @@ settled time; status polling does not rotate or consume a segment.
 hierarchy, decoded events and bytes, response sizes, capture duration, and
 active-query segments. `max_bytes_per_recording` is a stop threshold checked
 after flushing: a segment can exceed it by the bytes Verilator emitted since
-the preceding check. Limit-triggered stops and reasons are reported through
-status. Start, flush, stop, and automatic deadlines are serviced synchronously
-at RustDV's settled ReadOnly point.
+the preceding check. Exact duration and segment limits provide the hard
+termination bounds; the byte threshold provides an earlier size-triggered
+stop, not a filesystem quota. The legacy projection streams each newly closed
+segment once into its fixed-capacity ring, so its retained memory and response
+size are bounded independently of the number of captured changes. Filtered
+history queries separately enforce total change-scan and decoded-byte budgets.
+Limit-triggered stops and reasons are reported through status. Start, flush,
+stop, and automatic deadlines are serviced synchronously at RustDV's settled
+ReadOnly point.
 
 The simulator must be built in RustDV `record` mode (`--trace-fst`). `fast`
 mode remains completely uninstrumented; recording calls return a structured

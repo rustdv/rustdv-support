@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: teabone113/rustdv
-          ref: 6a017d921043526caa33e04b7d206f55099634a8
+          ref: 00fa66cc7fba7176d7453f0136a5be1077129063
           path: rustdv-core
 
       - uses: dtolnay/rust-toolchain@stable
@@ -94,7 +94,7 @@ jobs:
 
       - name: Select and verify pinned revisions
         run: |
-          expected_core=6a017d921043526caa33e04b7d206f55099634a8
+          expected_core=00fa66cc7fba7176d7453f0136a5be1077129063
           echo "$RUNNER_TEMP/verilator-5.050/bin" >> "$GITHUB_PATH"
           got="$($RUNNER_TEMP/verilator-5.050/bin/verilator --version | awk '{print $2}')"
           test "$got" = 5.050
@@ -111,6 +111,6 @@ jobs:
 
       - name: Verify smoke preserved the pinned lockfile
         run: |
-          expected_core=6a017d921043526caa33e04b7d206f55099634a8
+          expected_core=00fa66cc7fba7176d7453f0136a5be1077129063
           git diff --exit-code -- Cargo.lock
           grep -q "rev=$expected_core#$expected_core" Cargo.lock

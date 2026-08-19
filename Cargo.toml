@@ -16,9 +16,9 @@ repository = "https://github.com/rustdv/rustdv-support"
 [workspace.dependencies]
 # Temporary exact pin while the required RustDV core API is under review.
 # Replace this with a released RustDV version once that API is tagged.
-rustdv = { git = "https://github.com/teabone113/rustdv.git", rev = "6a017d921043526caa33e04b7d206f55099634a8" }
+rustdv = { git = "https://github.com/teabone113/rustdv.git", rev = "00fa66cc7fba7176d7453f0136a5be1077129063" }
 rustdv-debug = { path = "debug" }
 rustdv-mcp-verilator = { path = "mcp-verilator" }
-rustdv-vpi-stubs = { git = "https://github.com/teabone113/rustdv.git", rev = "6a017d921043526caa33e04b7d206f55099634a8" }
+rustdv-vpi-stubs = { git = "https://github.com/teabone113/rustdv.git", rev = "00fa66cc7fba7176d7453f0136a5be1077129063" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
