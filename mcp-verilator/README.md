@@ -18,3 +18,8 @@ structured unsupported-capability error.
 `rustdv-debug` remains independent of Verilator and FST. All trace control and
 decoding stays in this adapter and runs at settled ReadOnly through RustDV's
 service API. The unauthenticated server accepts loopback bind addresses only.
+
+Recording and query resources are bounded. The configured recording byte
+limit is a post-flush stop threshold, so the active segment may overshoot it by
+the trace data emitted between checks; status reports the observed bytes and
+the limit-triggered stop reason.

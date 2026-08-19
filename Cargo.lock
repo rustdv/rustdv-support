@@ -929,7 +929,7 @@ dependencies = [
 [[package]]
 name = "rustdv"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "rustdv-gpi",
  "rustdv-macros",
@@ -962,7 +962,7 @@ dependencies = [
 [[package]]
 name = "rustdv-gpi"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "rustdv-gpi-sys",
 ]
@@ -970,12 +970,12 @@ dependencies = [
 [[package]]
 name = "rustdv-gpi-sys"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 
 [[package]]
 name = "rustdv-macros"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 
 [[package]]
 name = "rustdv-mcp-verilator"
@@ -997,7 +997,7 @@ dependencies = [
 [[package]]
 name = "rustdv-methodology"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "rustdv-sim",
 ]
@@ -1005,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "rustdv-runner"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "rustdv-gpi",
  "rustdv-methodology",
@@ -1015,7 +1015,7 @@ dependencies = [
 [[package]]
 name = "rustdv-sim"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "libloading",
  "rustdv-gpi",
@@ -1024,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "rustdv-vpi-stubs"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=946c19ea0f03921880e9b216e7cde64719d09803#946c19ea0f03921880e9b216e7cde64719d09803"
+source = "git+https://github.com/teabone113/rustdv.git?rev=6a017d921043526caa33e04b7d206f55099634a8#6a017d921043526caa33e04b7d206f55099634a8"
 dependencies = [
  "rustdv-gpi-sys",
 ]

@@ -54,10 +54,12 @@ with the session. Active history queries rotate private segments at the same
 settled time; status polling does not rotate or consume a segment.
 
 `TraceRecordingConfig` bounds recordings, projected signals, indexed
-hierarchy, decoded events and bytes, response sizes, temporary files, capture
-duration, and active-query segments. Limit-triggered stops and reasons are
-reported through status. Start, flush, stop, and automatic deadlines are
-serviced synchronously at RustDV's settled ReadOnly point.
+hierarchy, decoded events and bytes, response sizes, capture duration, and
+active-query segments. `max_bytes_per_recording` is a stop threshold checked
+after flushing: a segment can exceed it by the bytes Verilator emitted since
+the preceding check. Limit-triggered stops and reasons are reported through
+status. Start, flush, stop, and automatic deadlines are serviced synchronously
+at RustDV's settled ReadOnly point.
 
 The simulator must be built in RustDV `record` mode (`--trace-fst`). `fast`
 mode remains completely uninstrumented; recording calls return a structured

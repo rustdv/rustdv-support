@@ -48,6 +48,8 @@ pub struct TraceRecordingConfig {
     pub max_changes_scanned: usize,
     pub max_decoded_bytes_per_query: usize,
     pub max_segments_per_recording: usize,
+    /// Stop threshold checked after flushing the active FST. The file can
+    /// exceed this value by data emitted since the preceding check.
     pub max_bytes_per_recording: u64,
     pub max_duration_steps: u64,
     /// Simulation-time interval between an FST flush and disk-limit check.
@@ -357,11 +359,15 @@ struct TraceRecording {
     retained: usize,
     dropped: u64,
     next_cursor: u64,
+    read_errors: u64,
     last_error: Option<String>,
     limit_reached: bool,
     limit_reason: Option<String>,
     last_limit_check_time_steps: u64,
     projection_through_time_steps: Option<u64>,
+    projection_samples: VecDeque<RecordingSample>,
+    projection_values: Vec<Option<String>>,
+    projection_materialized_segments: usize,
     index: Option<TraceIndex>,
 }
 
@@ -384,7 +390,7 @@ impl TraceRecording {
             retained: self.retained,
             dropped: self.dropped,
             next_cursor: self.next_cursor,
-            read_errors: 0,
+            read_errors: self.read_errors,
             last_error: self.last_error.clone(),
             backend: "fst".to_owned(),
             start_time_steps: self.start_time_steps,
@@ -741,8 +747,11 @@ impl TraceSession {
                 time_steps,
             } => {
                 self.prepare_query(&name, simulation_time_steps)?;
-                self.value_at(&name, &signal, time_steps)
-                    .map(TraceResponse::ValueAt)
+                let result = self.value_at(&name, &signal, time_steps);
+                if let Err(error) = &result {
+                    self.note_read_error(&name, error);
+                }
+                result.map(TraceResponse::ValueAt)
             }
             TraceRequest::Changes {
                 name,
@@ -753,15 +762,18 @@ impl TraceSession {
                 limit,
             } => {
                 self.prepare_query(&name, simulation_time_steps)?;
-                self.changes(
+                let result = self.changes(
                     &name,
                     &signal,
                     start_time_steps,
                     end_time_steps,
                     cursor,
                     limit,
-                )
-                .map(TraceResponse::Changes)
+                );
+                if let Err(error) = &result {
+                    self.note_read_error(&name, error);
+                }
+                result.map(TraceResponse::Changes)
             }
             TraceRequest::Snapshot {
                 name,
@@ -770,8 +782,11 @@ impl TraceSession {
                 max_signals,
             } => {
                 self.prepare_query(&name, simulation_time_steps)?;
-                self.snapshot(&name, &scope, time_steps, max_signals)
-                    .map(TraceResponse::Snapshot)
+                let result = self.snapshot(&name, &scope, time_steps, max_signals);
+                if let Err(error) = &result {
+                    self.note_read_error(&name, error);
+                }
+                result.map(TraceResponse::Snapshot)
             }
             TraceRequest::Summary => self.summary().map(TraceResponse::Summary),
         }
@@ -837,6 +852,7 @@ impl TraceSession {
             .start(&path)
             .map_err(|error| DebugError::new(format!("cannot arm FST capture: {error}")))?;
         let has_projection = !signals.is_empty();
+        let projection_signal_count = signals.len();
         let recording = TraceRecording {
             spec: RecordingSpec {
                 name: name.clone(),
@@ -853,11 +869,15 @@ impl TraceSession {
             retained: 0,
             dropped: 0,
             next_cursor: 0,
+            read_errors: 0,
             last_error: None,
             limit_reached: false,
             limit_reason: None,
             last_limit_check_time_steps: simulation_time_steps,
             projection_through_time_steps: None,
+            projection_samples: VecDeque::new(),
+            projection_values: vec![None; projection_signal_count],
+            projection_materialized_segments: 0,
             index: None,
         };
         self.recordings.insert(name.clone(), recording);
@@ -866,14 +886,17 @@ impl TraceSession {
                 self.rotate_active_segment(&name, simulation_time_steps)?;
                 self.ensure_index(&name)?;
                 self.validate_projection(&name)?;
+                self.refresh_projection_stats(&name)?;
                 Ok(self.recording(&name)?.status())
             })();
             return match initialized {
                 Ok(status) => Ok(TraceResponse::RecordingStatus(status)),
-                Err(error) => {
-                    self.discard_recording(&name);
-                    Err(error)
-                }
+                Err(error) => match self.discard_recording(&name) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(DebugError::new(format!(
+                        "{error}; failed to discard incomplete recording: {cleanup_error}"
+                    ))),
+                },
             };
         }
         Ok(TraceResponse::RecordingStatus(
@@ -913,9 +936,7 @@ impl TraceSession {
             }
             Ok::<(), DebugError>(())
         })() {
-            if let Ok(recording) = self.recording_mut(name) {
-                recording.last_error = Some(error.to_string());
-            }
+            self.note_read_error(name, &error);
         }
         Ok(())
     }
@@ -932,35 +953,73 @@ impl TraceSession {
         {
             self.stop_recording(name, simulation_time_steps, None)?;
         }
-        let Some(recording) = self.recordings.remove(name) else {
+        if !self.recordings.contains_key(name) {
             return Ok(TraceResponse::Removed(false));
-        };
-        for path in recording.paths() {
-            let _ = std::fs::remove_file(path);
         }
+        self.delete_recording_files(name)?;
+        self.recordings.remove(name);
         Ok(TraceResponse::Removed(true))
     }
 
-    fn discard_recording(&mut self, name: &str) {
+    fn discard_recording(&mut self, name: &str) -> Result<(), DebugError> {
         if self
             .recordings
             .get(name)
             .is_some_and(|recording| recording.active)
         {
-            let _ = self.host.stop();
+            let status = self
+                .host
+                .stop()
+                .map_err(|error| DebugError::new(error.to_string()))?;
+            let recording = self.recording_mut(name)?;
+            if let Some(path) = recording.active_path.take() {
+                recording.closed_segments.push(path);
+            }
+            recording.active = false;
+            recording.end_time_steps = status.end_time_steps;
         }
-        if let Some(recording) = self.recordings.remove(name) {
-            for path in recording.paths() {
-                let _ = std::fs::remove_file(path);
+        self.delete_recording_files(name)?;
+        self.recordings.remove(name);
+        Ok(())
+    }
+
+    fn delete_recording_files(&mut self, name: &str) -> Result<(), DebugError> {
+        let paths: Vec<_> = self
+            .recording(name)?
+            .paths()
+            .map(Path::to_path_buf)
+            .collect();
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    let message =
+                        format!("cannot delete private FST '{}': {error}", path.display());
+                    let recording = self.recording_mut(name)?;
+                    recording.last_error = Some(message.clone());
+                    return Err(DebugError::new(message));
+                }
             }
         }
+        Ok(())
     }
 
     fn prepare_query(&mut self, name: &str, simulation_time_steps: u64) -> Result<(), DebugError> {
-        if self.recording(name)?.active {
-            self.rotate_active_segment(name, simulation_time_steps)?;
+        let result = (|| {
+            if self.recording(name)?.active {
+                self.rotate_active_segment(name, simulation_time_steps)?;
+            }
+            self.ensure_index(name)?;
+            if !self.recording(name)?.spec.signals.is_empty() {
+                self.refresh_projection_stats(name)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            self.note_read_error(name, error);
         }
-        self.ensure_index(name)
+        result
     }
 
     fn rotate_active_segment(
@@ -1004,13 +1063,23 @@ impl TraceSession {
                 Ok(())
             }
             Err(error) => {
-                let _ = std::fs::remove_file(&next_path);
+                let cleanup_error = match std::fs::remove_file(&next_path) {
+                    Ok(()) => None,
+                    Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(cleanup) => Some(cleanup),
+                };
                 let recording = self.recording_mut(name)?;
                 recording.active = false;
-                recording.last_error = Some(error.to_string());
-                Err(DebugError::new(format!(
-                    "capture stopped while rotating a query segment: {error}"
-                )))
+                let message = if let Some(cleanup) = cleanup_error {
+                    recording.closed_segments.push(next_path);
+                    format!(
+                        "capture stopped while rotating a query segment: {error}; cannot delete failed private FST: {cleanup}"
+                    )
+                } else {
+                    format!("capture stopped while rotating a query segment: {error}")
+                };
+                recording.last_error = Some(message.clone());
+                Err(DebugError::new(message))
             }
         }
     }
@@ -1120,8 +1189,15 @@ impl TraceSession {
         cursor: Option<u64>,
         limit: usize,
     ) -> Result<TraceResponse, DebugError> {
-        let (samples, total) = self.materialize_projection(name)?;
-        let dropped = total.saturating_sub(samples.len() as u64);
+        let recording = self.recording(name)?;
+        if recording.spec.signals.is_empty() {
+            return Err(DebugError::new(
+                "this all-signal recording has no default projection; use recording_hierarchy and filtered history tools",
+            ));
+        }
+        let samples = &recording.projection_samples;
+        let total = recording.next_cursor;
+        let dropped = recording.dropped;
         let oldest = samples.front().map_or(total, |sample| sample.cursor);
         let requested = cursor.unwrap_or(oldest);
         let truncated = requested < oldest;
@@ -1137,13 +1213,6 @@ impl TraceSession {
             let next = sample.cursor.saturating_add(1);
             (next < total).then_some(next)
         });
-        {
-            let recording = self.recording_mut(name)?;
-            recording.retained = samples.len();
-            recording.dropped = dropped;
-            recording.next_cursor = total;
-            recording.projection_through_time_steps = Some(recording.end_time_steps);
-        }
         Ok(TraceResponse::Recording(RecordingPage {
             name: name.to_owned(),
             samples: page,
@@ -1157,13 +1226,39 @@ impl TraceSession {
         if self.recording(name)?.spec.signals.is_empty() {
             return Ok(());
         }
-        let (samples, total) = self.materialize_projection(name)?;
-        let recording = self.recording_mut(name)?;
-        recording.retained = samples.len();
-        recording.dropped = total.saturating_sub(samples.len() as u64);
-        recording.next_cursor = total;
-        recording.projection_through_time_steps = Some(recording.end_time_steps);
-        Ok(())
+        let mut recording = self
+            .recordings
+            .remove(name)
+            .ok_or_else(|| DebugError::new(format!("recording '{name}' does not exist")))?;
+        let result = (|| {
+            let index = recording
+                .index
+                .as_ref()
+                .ok_or_else(|| DebugError::new("recording hierarchy has not been indexed"))?;
+            let selected = resolve_projection(index, &recording.spec.signals)?;
+            let paths: Vec<_> = recording
+                .closed_segments
+                .iter()
+                .skip(recording.projection_materialized_segments)
+                .cloned()
+                .collect();
+            append_projection_segments(
+                &paths,
+                &selected,
+                &mut recording.projection_values,
+                &mut recording.projection_samples,
+                &mut recording.next_cursor,
+                &mut recording.dropped,
+                recording.spec.capacity,
+                self.config.max_decoded_bytes_per_query,
+            )?;
+            recording.projection_materialized_segments = recording.closed_segments.len();
+            recording.retained = recording.projection_samples.len();
+            recording.projection_through_time_steps = Some(recording.end_time_steps);
+            Ok(())
+        })();
+        self.recordings.insert(name.to_owned(), recording);
+        result
     }
 
     fn validate_projection(&self, name: &str) -> Result<(), DebugError> {
@@ -1171,40 +1266,6 @@ impl TraceSession {
         let index = self.index(name)?;
         resolve_projection(index, &recording.spec.signals)?;
         Ok(())
-    }
-
-    fn materialize_projection(
-        &mut self,
-        name: &str,
-    ) -> Result<(VecDeque<RecordingSample>, u64), DebugError> {
-        let (spec, start, end, paths) = {
-            let recording = self.recording(name)?;
-            if recording.spec.signals.is_empty() {
-                return Err(DebugError::new(
-                    "this all-signal recording has no default projection; use recording_hierarchy and filtered history tools",
-                ));
-            }
-            (
-                recording.spec.clone(),
-                recording.start_time_steps,
-                recording.end_time_steps,
-                recording
-                    .query_paths()
-                    .map(Path::to_path_buf)
-                    .collect::<Vec<_>>(),
-            )
-        };
-        let index = self.index(name)?.clone();
-        let selected = resolve_projection(&index, &spec.signals)?;
-        let events = read_events(
-            &paths,
-            &selected,
-            start,
-            end,
-            self.config.max_changes_scanned,
-            self.config.max_decoded_bytes_per_query,
-        )?;
-        Ok(project_samples(events, &selected, spec.capacity))
     }
 
     fn value_at(
@@ -1391,6 +1452,13 @@ impl TraceSession {
         Ok(())
     }
 
+    fn note_read_error(&mut self, name: &str, error: &DebugError) {
+        if let Ok(recording) = self.recording_mut(name) {
+            recording.read_errors = recording.read_errors.saturating_add(1);
+            recording.last_error = Some(error.to_string());
+        }
+    }
+
     fn recording(&self, name: &str) -> Result<&TraceRecording, DebugError> {
         self.recordings
             .get(name)
@@ -1500,7 +1568,11 @@ fn read_events(
                     decoded_bytes = total;
                     String::from_utf8_lossy(value).into_owned()
                 }
-                FstSignalValue::Real(value) => value.to_string(),
+                FstSignalValue::Real(_) => {
+                    return Err(DebugError::new(
+                        "real-valued FST variables are not supported by the binary signal API",
+                    ))
+                }
             };
             events.push(TraceEvent {
                 time_steps: time,
@@ -1556,48 +1628,146 @@ fn resolve_projection(
         .collect()
 }
 
-fn project_samples(
-    events: Vec<TraceEvent>,
+#[allow(clippy::too_many_arguments)]
+fn append_projection_segments(
+    paths: &[PathBuf],
     signals: &[IndexedSignal],
+    current: &mut Vec<Option<String>>,
+    samples: &mut VecDeque<RecordingSample>,
+    next_cursor: &mut u64,
+    dropped: &mut u64,
     capacity: usize,
-) -> (VecDeque<RecordingSample>, u64) {
+    max_value_bytes: usize,
+) -> Result<(), DebugError> {
+    if current.len() != signals.len() {
+        return Err(DebugError::new(
+            "recording projection state does not match its selected signals",
+        ));
+    }
     let by_handle: HashMap<_, _> = signals
         .iter()
         .enumerate()
         .map(|(position, signal)| (signal.handle_index, position))
         .collect();
-    let mut current: Vec<Option<String>> = vec![None; signals.len()];
-    let mut samples = VecDeque::new();
-    let mut cursor = 0_u64;
-    let mut index = 0;
-    while index < events.len() {
-        let time = events[index].time_steps;
-        let before = current.clone();
-        while index < events.len() && events[index].time_steps == time {
-            if let Some(position) = by_handle.get(&events[index].handle_index) {
-                current[*position] = Some(events[index].value.clone());
+    let handles: Vec<_> = signals
+        .iter()
+        .map(|signal| FstSignalHandle::from_index(signal.handle_index))
+        .collect();
+    let mut working_current = current.clone();
+    let mut working_samples = samples.clone();
+    let mut working_next_cursor = *next_cursor;
+    let mut working_dropped = *dropped;
+
+    for path in paths {
+        let mut reader = open_reader(path)?;
+        let header = reader.get_header();
+        let filter = FstFilter::new(
+            header.start_time,
+            header.end_time,
+            handles
+                .iter()
+                .map(|handle| FstSignalHandle::from_index(handle.get_index()))
+                .collect(),
+        );
+        let mut pending_time = None;
+        let mut before = working_current.clone();
+        let result = reader.read_signals(&filter, |time, handle, value| {
+            if pending_time.is_some_and(|pending| pending != time) {
+                append_projection_sample(
+                    pending_time.expect("a differing pending time exists"),
+                    signals,
+                    &before,
+                    &working_current,
+                    &mut working_samples,
+                    &mut working_next_cursor,
+                    &mut working_dropped,
+                    capacity,
+                );
+                before = working_current.clone();
             }
-            index += 1;
-        }
-        if current.iter().any(Option::is_none) || current == before {
-            continue;
-        }
-        let values = signals
-            .iter()
-            .zip(&current)
-            .map(|(signal, value)| signal_value(signal, value.as_deref().unwrap_or_default()))
-            .collect();
-        if samples.len() == capacity {
-            samples.pop_front();
-        }
-        samples.push_back(RecordingSample {
-            cursor,
-            simulation_time_steps: time,
-            values,
+            if pending_time != Some(time) {
+                pending_time = Some(time);
+            }
+            let Some(position) = by_handle.get(&handle.get_index()) else {
+                return Ok::<(), DebugError>(());
+            };
+            let value = match value {
+                FstSignalValue::String(value) => {
+                    if value.len() > max_value_bytes {
+                        return Err(DebugError::new(format!(
+                            "projected FST value exceeds the bounded decoded-data limit of {max_value_bytes} bytes"
+                        )));
+                    }
+                    String::from_utf8_lossy(value).into_owned()
+                }
+                FstSignalValue::Real(_) => {
+                    return Err(DebugError::new(
+                        "real-valued FST variables are not supported by the binary signal API",
+                    ))
+                }
+            };
+            working_current[*position] = Some(value);
+            Ok(())
         });
-        cursor = cursor.saturating_add(1);
+        match result {
+            Ok(()) => {}
+            Err(ReadSignalsError::CallbackError(error)) => return Err(error),
+            Err(ReadSignalsError::ReadError(error)) => {
+                return Err(DebugError::new(format!(
+                    "cannot read private FST projection: {error}"
+                )))
+            }
+        }
+        if let Some(time) = pending_time {
+            append_projection_sample(
+                time,
+                signals,
+                &before,
+                &working_current,
+                &mut working_samples,
+                &mut working_next_cursor,
+                &mut working_dropped,
+                capacity,
+            );
+        }
     }
-    (samples, cursor)
+
+    *current = working_current;
+    *samples = working_samples;
+    *next_cursor = working_next_cursor;
+    *dropped = working_dropped;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_projection_sample(
+    time_steps: u64,
+    signals: &[IndexedSignal],
+    before: &[Option<String>],
+    current: &[Option<String>],
+    samples: &mut VecDeque<RecordingSample>,
+    next_cursor: &mut u64,
+    dropped: &mut u64,
+    capacity: usize,
+) {
+    if current.iter().any(Option::is_none) || current == before {
+        return;
+    }
+    let values = signals
+        .iter()
+        .zip(current)
+        .map(|(signal, value)| signal_value(signal, value.as_deref().unwrap_or_default()))
+        .collect();
+    if samples.len() == capacity {
+        samples.pop_front();
+        *dropped = dropped.saturating_add(1);
+    }
+    samples.push_back(RecordingSample {
+        cursor: *next_cursor,
+        simulation_time_steps: time_steps,
+        values,
+    });
+    *next_cursor = next_cursor.saturating_add(1);
 }
 
 #[cfg(test)]
@@ -1816,11 +1986,15 @@ mod tests {
                 retained: 0,
                 dropped: 0,
                 next_cursor: 0,
+                read_errors: 0,
                 last_error: None,
                 limit_reached: false,
                 limit_reason: None,
                 last_limit_check_time_steps: 11,
                 projection_through_time_steps: None,
+                projection_samples: VecDeque::new(),
+                projection_values: Vec::new(),
+                projection_materialized_segments: 0,
                 index: None,
             },
         );
@@ -1850,5 +2024,144 @@ mod tests {
         let error = resolve_projection(&index, &["TOP.count".into(), "count".into()])
             .expect_err("alias duplication was accepted");
         assert!(error.message.contains("more than once through aliases"));
+    }
+
+    #[test]
+    fn projection_ring_keeps_recent_samples_after_many_changes() {
+        let signals = vec![IndexedSignal {
+            path: "TOP.count".into(),
+            width: 4,
+            handle_index: 7,
+        }];
+        let mut samples = VecDeque::new();
+        let mut next_cursor = 0;
+        let mut dropped = 0;
+        let mut before = vec![None];
+
+        for (time_steps, value) in ["0000", "0001", "0010", "0011", "0100"]
+            .into_iter()
+            .enumerate()
+        {
+            let current = vec![Some(value.to_owned())];
+            append_projection_sample(
+                time_steps as u64,
+                &signals,
+                &before,
+                &current,
+                &mut samples,
+                &mut next_cursor,
+                &mut dropped,
+                2,
+            );
+            before = current;
+        }
+
+        assert_eq!(next_cursor, 5);
+        assert_eq!(dropped, 3);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples.front().map(|sample| sample.cursor), Some(3));
+        assert_eq!(samples.back().map(|sample| sample.cursor), Some(4));
+        assert_eq!(
+            samples
+                .back()
+                .map(|sample| sample.values[0].binary.as_str()),
+            Some("0100")
+        );
+    }
+
+    #[test]
+    fn deletion_failure_preserves_recording_and_accounting() {
+        let (mut session, _client) =
+            TraceSession::with_host(TraceRecordingConfig::default(), Box::new(UnavailableHost))
+                .unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let undeletable_as_file = temporary.path().join("segment.fst");
+        std::fs::create_dir(&undeletable_as_file).unwrap();
+        session.recordings.insert(
+            "kept".into(),
+            TraceRecording {
+                spec: RecordingSpec {
+                    name: "kept".into(),
+                    signals: Vec::new(),
+                    capacity: 16,
+                },
+                active: false,
+                closed_segments: vec![undeletable_as_file.clone()],
+                active_path: None,
+                start_time_steps: 7,
+                end_time_steps: 11,
+                bytes: 123,
+                signal_count: 0,
+                retained: 0,
+                dropped: 0,
+                next_cursor: 0,
+                read_errors: 0,
+                last_error: None,
+                limit_reached: false,
+                limit_reason: None,
+                last_limit_check_time_steps: 7,
+                projection_through_time_steps: None,
+                projection_samples: VecDeque::new(),
+                projection_values: Vec::new(),
+                projection_materialized_segments: 0,
+                index: None,
+            },
+        );
+
+        let error = session.remove_recording("kept", 11).unwrap_err();
+
+        assert!(error.message.contains("cannot delete private FST"));
+        let status = session.recording("kept").unwrap().status();
+        assert_eq!(status.bytes, 123);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("cannot delete private FST")));
+        assert!(undeletable_as_file.is_dir());
+    }
+
+    #[test]
+    fn read_errors_are_reported_through_recording_status() {
+        let (mut session, _client) =
+            TraceSession::with_host(TraceRecordingConfig::default(), Box::new(UnavailableHost))
+                .unwrap();
+        session.recordings.insert(
+            "history".into(),
+            TraceRecording {
+                spec: RecordingSpec {
+                    name: "history".into(),
+                    signals: Vec::new(),
+                    capacity: 16,
+                },
+                active: false,
+                closed_segments: Vec::new(),
+                active_path: None,
+                start_time_steps: 7,
+                end_time_steps: 11,
+                bytes: 0,
+                signal_count: 0,
+                retained: 0,
+                dropped: 0,
+                next_cursor: 0,
+                read_errors: 0,
+                last_error: None,
+                limit_reached: false,
+                limit_reason: None,
+                last_limit_check_time_steps: 7,
+                projection_through_time_steps: None,
+                projection_samples: VecDeque::new(),
+                projection_values: Vec::new(),
+                projection_materialized_segments: 0,
+                index: None,
+            },
+        );
+        session.note_read_error("history", &DebugError::new("synthetic decode failure"));
+
+        let status = session.recording("history").unwrap().status();
+        assert_eq!(status.read_errors, 1);
+        assert_eq!(
+            status.last_error.as_deref(),
+            Some("synthetic decode failure")
+        );
     }
 }

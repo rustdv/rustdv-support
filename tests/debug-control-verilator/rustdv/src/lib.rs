@@ -310,8 +310,11 @@ async fn fst_recording_control_and_history(ctx: RustdvCtx) -> Result<(), TestErr
             };
             if !started.active
                 || started.start_time_steps != positioned_time
-                || started.retained != 0
-                || started.projection_through_time_steps.is_some()
+                || started.retained != 1
+                || started.dropped != 0
+                || started.next_cursor != 1
+                || started.read_errors != 0
+                || started.projection_through_time_steps != Some(positioned_time)
             {
                 return Err(format!(
                     "capture did not arm at positioned time: {started:?}"
