@@ -1,0 +1,5 @@
+`verilator_config
+public_flat_rw -module "debug_probe" -var "clk"
+public_flat_rw -module "debug_probe" -var "count"
+public_flat_rw -module "debug_probe" -var "done"
+public_flat_rw -module "debug_probe" -var "selected_debug_state"

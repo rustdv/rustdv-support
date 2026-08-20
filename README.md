@@ -20,6 +20,21 @@ The MCP transport never owns or touches a VPI handle. Worker threads submit
 bounded requests; the simulator thread services them at RustDV's settled
 ReadOnly point. RustDV remains the only simulation scheduler.
 
+## Documentation
+
+- [Getting started](docs/getting-started.md) — dependencies, Rust testbench
+  setup, Verilator RECORD mode, first MCP call, and a neutral-backend example
+- [Backend-neutral debug API](docs/debug-api.md) — `SignalProvider`,
+  owner-thread polling, requests, watches, recordings, and control integration
+- [MCP tool reference](docs/mcp-tools.md) — every tool, argument, default,
+  response, cursor, and control state
+- [Recording and history](docs/recording-and-history.md) — full-design capture,
+  internal-signal discovery, historical queries, limits, and cleanup
+- [Troubleshooting](docs/troubleshooting.md) — visibility, timing, leases,
+  linking, FST, query limits, and shutdown
+- [Standalone MCP debug testbench](examples/mcp-debug-testbench/) — a small
+  documentation-only Rust/SystemVerilog example
+
 ## MCP tools
 
 The Verilator server exposes:
@@ -49,9 +64,11 @@ the same captured trace for hierarchy, values, changes, and snapshots.
 
 The FST is an internal backing store rather than a user waveform artifact. It
 is created in a restricted temporary directory only when recording starts,
-never returned to an MCP client, deleted by `remove_recording`, and removed
-with the session. Active history queries rotate private segments at the same
-settled time; status polling does not rotate or consume a segment.
+and its path is not part of successful MCP responses. It is deleted by
+`remove_recording` and removed with the session. A filesystem-cleanup error
+can include the affected private path for diagnosis. Active history queries
+rotate private segments at the same settled time; status polling does not
+rotate or consume a segment.
 
 `TraceRecordingConfig` bounds recordings, projected signals, indexed
 hierarchy, decoded events and bytes, response sizes, capture duration, and

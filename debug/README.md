@@ -13,3 +13,10 @@ Verilator, VPI, HTTP, or MCP.
 A backend owns `DebugSession` on its simulator thread and gives transport
 workers cloned `DebugClient` handles. All provider reads occur while polling
 the session on that owner thread.
+
+See [Backend-neutral debug API](../docs/debug-api.md) for `SignalProvider`,
+owner-thread polling, scheduler responsibilities, requests, watches,
+recordings, control, and worker-thread examples. The shorter
+[getting-started example](../docs/getting-started.md#using-rustdv-debug-without-verilator)
+shows the basic boundary, and the complete request/response types are
+documented by the public Rust API in `src/lib.rs`.

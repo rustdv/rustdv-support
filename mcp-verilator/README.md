@@ -27,3 +27,12 @@ limit-triggered stop reason. The legacy change-only projection folds each
 closed segment into a fixed-capacity ring with a per-value width bound;
 filtered value/change/snapshot queries use separate total scan and decoded-byte
 budgets.
+
+User guides:
+
+- [Getting started](../docs/getting-started.md)
+- [Backend-neutral debug API](../docs/debug-api.md)
+- [MCP tool reference](../docs/mcp-tools.md)
+- [Recording and history](../docs/recording-and-history.md)
+- [Troubleshooting](../docs/troubleshooting.md)
+- [Standalone example](../examples/mcp-debug-testbench/)
