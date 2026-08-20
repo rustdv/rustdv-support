@@ -31,17 +31,25 @@ cargo \
 
 LIB="$CARGO_TARGET_DIR/release/librustdv_debug_control_verilator_test.so"
 [ -f "$LIB" ] || LIB="$CARGO_TARGET_DIR/release/librustdv_debug_control_verilator_test.dylib"
-RUSTDV_VERILATOR_MODE=inspect \
+RUSTDV_TESTCASE=fast_recording_ \
+RUSTDV_VERIFY_FAST_RECORDING_REJECTION=1 \
+RUSTDV_VERILATOR_MODE=fast \
+    "$RUSTDV_ROOT/sim/run_verilator.sh" "$LIB" debug_control_probe "$BUILD/fast" \
+    "$PWD/tests/debug-control-verilator/probe.sv"
+
+RUSTDV_TESTCASE=fst_recording_ \
+RUSTDV_VERIFY_FST_RECORDING=1 \
+RUSTDV_VERILATOR_MODE=record \
 RUSTDV_VERILATOR_CONTROL_FILE="$PWD/tests/debug-control-verilator/inspect.vlt" \
-    "$RUSTDV_ROOT/sim/run_verilator.sh" "$LIB" debug_control_probe "$BUILD/verilator" \
+    "$RUSTDV_ROOT/sim/run_verilator.sh" "$LIB" debug_control_probe "$BUILD/record" \
     "$PWD/tests/debug-control-verilator/probe.sv"
 
 FST="$(find "$BUILD" -type f -name '*.fst' -print -quit)"
 if [ -n "$FST" ]; then
-    echo "DEBUG CONTROL NO FST: FAIL — emitted $FST" >&2
+    echo "DEBUG CONTROL PRIVATE FST: FAIL — leaked $FST into the build tree" >&2
     exit 1
 fi
-echo "DEBUG CONTROL NO FST: PASS"
+echo "DEBUG CONTROL PRIVATE FST: PASS"
 
 restore_lockfile
 cmp -s "$LOCKFILE_BACKUP" "$LOCKFILE"

@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "rustdv-mcp-debug-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustdv = { git = "https://github.com/rustdv/rustdv.git" }
+rustdv-mcp-verilator = { git = "https://github.com/rustdv/rustdv-support.git" }
+
+[dev-dependencies]
+rustdv-vpi-stubs = { git = "https://github.com/rustdv/rustdv.git" }
+
