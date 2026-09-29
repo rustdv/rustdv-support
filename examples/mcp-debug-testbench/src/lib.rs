@@ -1,8 +1,7 @@
 use rustdv::prelude::*;
-use rustdv_mcp_verilator::{
-    run_verilator_debug_service, verilator_debug_session_with_configs,
-    DebugServiceExit, DebugSessionConfig, McpServer, McpServerConfig,
-    TraceRecordingConfig,
+use rustdv_mcp::{
+    run_debug_service, simulator_debug_session_with_config, DebugServiceExit,
+    DebugSessionConfig, McpServer, McpServerConfig,
 };
 use std::time::Duration;
 
@@ -22,15 +21,7 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
         pause_inactivity_timeout: Duration::from_secs(30),
         ..DebugSessionConfig::default()
     };
-    let trace_config = TraceRecordingConfig {
-        max_duration_steps: 100_000,
-        ..TraceRecordingConfig::default()
-    };
-    let (mut session, client) = verilator_debug_session_with_configs(
-        ctx.dut(),
-        debug_config,
-        trace_config,
-    )
+    let (mut session, client) = simulator_debug_session_with_config(ctx.dut(), debug_config)
     .map_err(|error| TestError::new(error.to_string()))?;
 
     let server = McpServer::start(
@@ -43,7 +34,7 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
     .map_err(|error| TestError::new(error.to_string()))?;
     println!("RustDV MCP endpoint: {}", server.endpoint());
 
-    match run_verilator_debug_service(&mut session).await {
+    match run_debug_service(&mut session).await {
         DebugServiceExit::Terminated => println!("debug session terminated"),
         DebugServiceExit::ControllerDisconnected => {
             println!("debug controller disconnected; simulation released")
@@ -53,4 +44,3 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
     drop(server);
     Ok(())
 }
-

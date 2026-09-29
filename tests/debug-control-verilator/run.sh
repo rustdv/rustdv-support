@@ -44,6 +44,41 @@ RUSTDV_VERILATOR_CONTROL_FILE="$PWD/tests/debug-control-verilator/inspect.vlt" \
     "$RUSTDV_ROOT/sim/run_verilator.sh" "$LIB" debug_control_probe "$BUILD/record" \
     "$PWD/tests/debug-control-verilator/probe.sv"
 
+RUSTDV_TESTCASE=portable_debug_ \
+RUSTDV_VERIFY_PORTABLE_DEBUG=1 \
+RUSTDV_EXPECT_TRACE_BACKEND=1 \
+RUSTDV_VERILATOR_MODE=record \
+RUSTDV_VERILATOR_CONTROL_FILE="$PWD/tests/debug-control-verilator/inspect.vlt" \
+    "$RUSTDV_ROOT/sim/run_verilator.sh" "$LIB" debug_control_probe "$BUILD/portable-verilator" \
+    "$PWD/tests/debug-control-verilator/probe.sv"
+
+if command -v iverilog >/dev/null && command -v vvp >/dev/null; then
+    cp "$LIB" "$BUILD/rustdv_debug_control_verilator_test.vpi"
+    iverilog -g2012 -o "$BUILD/portable-icarus.vvp" -s debug_control_probe \
+        "$PWD/tests/debug-control-verilator/probe.sv"
+    if ! RUSTDV_TOP=debug_control_probe \
+        RUSTDV_TESTCASE=portable_debug_ \
+        RUSTDV_VERIFY_PORTABLE_DEBUG=1 \
+        RUSTDV_EXPECT_TRACE_BACKEND=0 \
+        vvp -M "$BUILD" -m rustdv_debug_control_verilator_test \
+            "$BUILD/portable-icarus.vvp" > "$BUILD/portable-icarus.log" 2>&1; then
+        cat "$BUILD/portable-icarus.log"
+        exit 1
+    fi
+    cat "$BUILD/portable-icarus.log"
+    if ! grep -q '^REGRESSION: PASS$' "$BUILD/portable-icarus.log" || \
+        ! grep -q '^PORTABLE DEBUG FRONTEND: PASS$' "$BUILD/portable-icarus.log"; then
+        echo "PORTABLE DEBUG ICARUS: FAIL (regression verdict)" >&2
+        exit 1
+    fi
+else
+    if [ "${REQUIRE_ICARUS:-0}" = 1 ]; then
+        echo "PORTABLE DEBUG ICARUS: FAIL (iverilog/vvp unavailable)" >&2
+        exit 1
+    fi
+    echo "PORTABLE DEBUG ICARUS: SKIPPED (iverilog/vvp unavailable)"
+fi
+
 FST="$(find "$BUILD" -type f -name '*.fst' -print -quit)"
 if [ -n "$FST" ]; then
     echo "DEBUG CONTROL PRIVATE FST: FAIL — leaked $FST into the build tree" >&2

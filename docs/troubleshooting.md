@@ -178,14 +178,14 @@ bulk of the investigation on the closed history.
 
 ## Direct runtime trace control reports the wrong phase
 
-The low-level `rustdv::sim::verilator_trace` operations must run on the
+The low-level `rustdv::sim::simulator_trace` operations must run on the
 simulator thread at settled ReadOnly. The MCP adapter already enforces this.
 
 For custom code, wrap the operation:
 
 ```rust
 let status = rustdv::service_read_only(|| {
-    rustdv::sim::verilator_trace::status()
+    rustdv::sim::simulator_trace::status()
 }).await;
 ```
 

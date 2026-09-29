@@ -1,5 +1,6 @@
 use rustdv::prelude::*;
 use rustdv_debug::{ControlMode, DebugError, DebugResponse, PauseReason, RecordingPage};
+use rustdv_mcp::{run_debug_service, simulator_debug_session_with_config};
 use rustdv_mcp_verilator::{
     run_verilator_debug_service, verilator_debug_session_with_config,
     verilator_debug_session_with_configs, DebugServiceExit, DebugSessionConfig, McpServer,
@@ -686,5 +687,161 @@ async fn fst_recording_control_and_history(ctx: RustdvCtx) -> Result<(), TestErr
         .map_err(TestError::new)?;
     drop(server);
     println!("DEBUG FST CONTROL HISTORY: PASS");
+    Ok(())
+}
+
+// The same Rust testbench and MCP commands exercise the VPI debug front end
+// on both Icarus and Verilator. Only the trace backend is simulator-specific.
+#[rustdv::test(timeout_time = 10, timeout_unit = "us")]
+async fn portable_debug_frontend_runs_on_both_simulators(ctx: RustdvCtx) -> Result<(), TestError> {
+    if std::env::var_os("RUSTDV_VERIFY_PORTABLE_DEBUG").is_none() {
+        return Ok(());
+    }
+
+    let (mut session, client) = simulator_debug_session_with_config(ctx.dut(), debug_config())
+        .map_err(|error| TestError::new(error.to_string()))?;
+    let server = McpServer::start(client, server_config())
+        .map_err(|error| TestError::new(error.to_string()))?;
+    let endpoint = server.endpoint().to_owned();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let controller = thread::spawn(move || -> Result<(), String> {
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|error| format!("cannot start controller runtime: {error}"))?;
+        runtime.block_on(async move {
+            let http = reqwest::Client::new();
+            let mut request_id = 0;
+            ready_tx
+                .send(())
+                .map_err(|_| "simulator dropped portable controller".to_owned())?;
+
+            let DebugResponse::Control(paused) = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "pause_simulation",
+                json!({}),
+            )
+            .await?
+            else {
+                return Err("pause returned the wrong response".into());
+            };
+            let status: Value = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "simulation_status",
+                json!({}),
+            )
+            .await?;
+            let trace = status["value"].get("trace");
+            let expected_trace = std::env::var_os("RUSTDV_EXPECT_TRACE_BACKEND").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+            let backend_matches = if expected_trace {
+                trace
+                    .and_then(|value| value.get("backend"))
+                    .and_then(Value::as_str)
+                    == Some("fst")
+            } else {
+                trace.is_none()
+            };
+            if !backend_matches {
+                let _ = call_mcp_tool::<DebugResponse>(
+                    &http,
+                    &endpoint,
+                    &mut request_id,
+                    "terminate_simulation",
+                    json!({}),
+                )
+                .await;
+                return Err(format!("unexpected trace backend selection: {status}"));
+            }
+            let DebugResponse::Signal(signal) = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "read_signal",
+                json!({"path": "clk"}),
+            )
+            .await?
+            else {
+                return Err("live signal read returned the wrong response".into());
+            };
+            if signal.width != 1 {
+                return Err(format!("clk had width {}, not 1", signal.width));
+            }
+
+            let _: DebugResponse = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "start_recording",
+                json!({"name": "portable", "signals": ["clk"], "capacity": 16}),
+            )
+            .await?;
+            let _: DebugResponse = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "run_until_time",
+                json!({"target_time_steps": paused.simulation_time_steps + 3}),
+            )
+            .await?;
+            wait_for_pause(&http, &endpoint, &mut request_id).await?;
+            let DebugResponse::Recording(page) = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "get_recording",
+                json!({"name": "portable", "limit": 16}),
+            )
+            .await?
+            else {
+                return Err("recording query returned the wrong response".into());
+            };
+            if page.samples.len() < 2 {
+                let _ = call_mcp_tool::<DebugResponse>(
+                    &http,
+                    &endpoint,
+                    &mut request_id,
+                    "terminate_simulation",
+                    json!({}),
+                )
+                .await;
+                return Err(format!("recording missed clock changes: {page:?}"));
+            }
+            let _: DebugResponse = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "stop_recording",
+                json!({"name": "portable"}),
+            )
+            .await?;
+            let _: DebugResponse = call_mcp_tool(
+                &http,
+                &endpoint,
+                &mut request_id,
+                "terminate_simulation",
+                json!({}),
+            )
+            .await?;
+            Ok(())
+        })
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| TestError::new(format!("controller did not start: {error}")))?;
+    thread::sleep(Duration::from_millis(100));
+    let exit = run_debug_service(&mut session).await;
+    if exit != DebugServiceExit::Terminated {
+        return Err(TestError::new(format!("debug service exited as {exit:?}")));
+    }
+    controller
+        .join()
+        .map_err(|_| TestError::new("portable debug controller panicked"))?
+        .map_err(TestError::new)?;
+    drop(server);
+    println!("PORTABLE DEBUG FRONTEND: PASS");
     Ok(())
 }

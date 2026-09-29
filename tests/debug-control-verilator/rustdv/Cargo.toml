@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 rustdv.workspace = true
 rustdv-debug.workspace = true
+rustdv-mcp.workspace = true
 rustdv-mcp-verilator.workspace = true
 serde.workspace = true
 serde_json.workspace = true

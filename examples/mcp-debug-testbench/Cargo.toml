@@ -10,9 +10,8 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rustdv = { git = "https://github.com/rustdv/rustdv.git" }
-rustdv-mcp-verilator = { git = "https://github.com/rustdv/rustdv-support.git" }
+rustdv = { git = "https://github.com/teabone113/rustdv.git", rev = "259490f6aa659c6016795296d3740def24fdfce3", package = "rustdv" }
+rustdv-mcp = { path = "../../mcp" }
 
 [dev-dependencies]
-rustdv-vpi-stubs = { git = "https://github.com/rustdv/rustdv.git" }
-
+rustdv-vpi-stubs = { git = "https://github.com/teabone113/rustdv.git", rev = "259490f6aa659c6016795296d3740def24fdfce3", package = "rustdv-vpi-stubs" }

@@ -3,10 +3,15 @@
 Loopback MCP inspection and control for RustDV simulations running on
 Verilator.
 
-This crate adapts Verilator VPI hierarchy and signal handles to
-`rustdv-debug`, serves the public debug operations over streamable HTTP, and
-provides an opt-in service loop composed from RustDV's existing ReadOnly and
-time triggers. It does not create another simulation scheduler.
+This crate preserves the original import path and Verilator-named APIs by
+re-exporting `rustdv-mcp`. New testbenches should depend on `rustdv-mcp` and
+call its simulator-neutral session and service entry points. Existing
+Verilator testbenches need no source changes.
+
+The implementation adapts VPI hierarchy and signal handles to `rustdv-debug`,
+serves the public debug operations over streamable HTTP, and composes an
+opt-in service loop from RustDV's existing ReadOnly and time triggers. It does
+not create another simulation scheduler.
 
 Live reads, watches, and run-until predicates use VPI. Recording uses a
 runtime-gated, private all-signal FST in RustDV's Verilator `record` mode; the
