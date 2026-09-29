@@ -13,7 +13,7 @@ module debug_control_probe(
     // The recording-duration regression must then be woken only by the MCP
     // service's trace deadline, not by a convenient free-running clock.
     initial begin
-        while (!done) begin
+        while (done !== 1'b1) begin
             #1 clk = ~clk;
         end
     end

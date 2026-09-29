@@ -8,7 +8,7 @@
 use fst_reader::{
     FstFilter, FstHierarchyEntry, FstReader, FstSignalHandle, FstSignalValue, ReadSignalsError,
 };
-use rustdv::sim::verilator_trace;
+use rustdv::sim::simulator_trace;
 use rustdv_debug::{
     DebugError, RecordingPage, RecordingSample, RecordingSpec, SignalInfo, SignalKind, SignalValue,
 };
@@ -210,7 +210,8 @@ pub enum TraceResponse {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum TraceRequest {
+#[doc(hidden)]
+pub enum TraceRequest {
     Start {
         name: String,
         signals: Vec<String>,
@@ -266,12 +267,13 @@ struct RequestEnvelope {
 }
 
 #[derive(Clone)]
-pub(crate) struct TraceClient {
+#[doc(hidden)]
+pub struct TraceClient {
     requests: SyncSender<RequestEnvelope>,
 }
 
 impl TraceClient {
-    pub(crate) fn request_timeout(
+    pub fn request_timeout(
         &self,
         request: TraceRequest,
         timeout: Duration,
@@ -323,35 +325,35 @@ impl TraceClient {
 }
 
 trait TraceHost {
-    fn status(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError>;
+    fn status(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError>;
     fn start(
         &mut self,
         path: &Path,
-    ) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError>;
-    fn flush(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError>;
-    fn stop(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError>;
+    ) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError>;
+    fn flush(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError>;
+    fn stop(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError>;
 }
 
 struct RustdvTraceHost;
 
 impl TraceHost for RustdvTraceHost {
-    fn status(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-        verilator_trace::status()
+    fn status(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+        simulator_trace::status()
     }
 
     fn start(
         &mut self,
         path: &Path,
-    ) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-        verilator_trace::start(path)
+    ) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+        simulator_trace::start(path)
     }
 
-    fn flush(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-        verilator_trace::flush()
+    fn flush(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+        simulator_trace::flush()
     }
 
-    fn stop(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-        verilator_trace::stop()
+    fn stop(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+        simulator_trace::stop()
     }
 }
 
@@ -612,7 +614,8 @@ impl TraceIndex {
     }
 }
 
-pub(crate) struct TraceSession {
+#[doc(hidden)]
+pub struct TraceSession {
     requests: Receiver<RequestEnvelope>,
     config: TraceRecordingConfig,
     recordings: BTreeMap<String, TraceRecording>,
@@ -622,7 +625,7 @@ pub(crate) struct TraceSession {
 }
 
 impl TraceSession {
-    pub(crate) fn new(config: TraceRecordingConfig) -> Result<(Self, TraceClient), DebugError> {
+    pub fn new(config: TraceRecordingConfig) -> Result<(Self, TraceClient), DebugError> {
         Self::with_host(config, Box::new(RustdvTraceHost))
     }
 
@@ -645,7 +648,7 @@ impl TraceSession {
         ))
     }
 
-    pub(crate) fn poll(&mut self, simulation_time_steps: u64) {
+    pub fn poll(&mut self, simulation_time_steps: u64) {
         self.enforce_active_limits(simulation_time_steps);
         for _ in 0..self.config.max_requests_per_poll {
             let envelope = match self.requests.try_recv() {
@@ -656,7 +659,7 @@ impl TraceSession {
         }
     }
 
-    pub(crate) fn next_deadline_steps(&self) -> Option<u64> {
+    pub fn next_deadline_steps(&self) -> Option<u64> {
         let recording = self
             .recordings
             .values()
@@ -670,7 +673,7 @@ impl TraceSession {
         Some(duration_deadline.min(byte_check_deadline))
     }
 
-    pub(crate) fn stop_active(&mut self, simulation_time_steps: u64) {
+    pub fn stop_active(&mut self, simulation_time_steps: u64) {
         if let Some(name) = self.active_name() {
             let _ = self.stop_recording(&name, simulation_time_steps, None);
         }
@@ -1152,8 +1155,8 @@ impl TraceSession {
 
     fn summary(&mut self) -> Result<TraceSummary, DebugError> {
         let available = match self.host.status() {
-            Ok(status) => status.state != verilator_trace::TraceState::Unavailable,
-            Err(verilator_trace::TraceError::Unavailable(_)) => false,
+            Ok(status) => status.state != simulator_trace::TraceState::Unavailable,
+            Err(simulator_trace::TraceError::Unavailable(_)) => false,
             Err(error) => return Err(DebugError::new(error.to_string())),
         };
         for recording in self.recordings.values_mut() {
@@ -1790,8 +1793,8 @@ mod tests {
     struct FailingStopHost;
 
     impl TraceHost for UnavailableHost {
-        fn status(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Err(verilator_trace::TraceError::Unavailable(
+        fn status(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Err(simulator_trace::TraceError::Unavailable(
                 "FAST build".into(),
             ))
         }
@@ -1799,25 +1802,25 @@ mod tests {
         fn start(
             &mut self,
             _path: &Path,
-        ) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Err(verilator_trace::TraceError::Unavailable(
+        ) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Err(simulator_trace::TraceError::Unavailable(
                 "FAST build".into(),
             ))
         }
 
-        fn flush(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
+        fn flush(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
             unreachable!()
         }
 
-        fn stop(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
+        fn stop(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
             unreachable!()
         }
     }
 
     impl TraceHost for FailingFlushHost {
-        fn status(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Ok(verilator_trace::TraceStatus {
-                state: verilator_trace::TraceState::Idle,
+        fn status(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Ok(simulator_trace::TraceStatus {
+                state: simulator_trace::TraceState::Idle,
                 start_time_steps: 7,
                 end_time_steps: 11,
                 dump_count: 1,
@@ -1827,24 +1830,24 @@ mod tests {
         fn start(
             &mut self,
             _path: &Path,
-        ) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Ok(verilator_trace::TraceStatus {
-                state: verilator_trace::TraceState::Active,
+        ) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Ok(simulator_trace::TraceStatus {
+                state: simulator_trace::TraceState::Active,
                 start_time_steps: 7,
                 end_time_steps: 7,
                 dump_count: 1,
             })
         }
 
-        fn flush(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Err(verilator_trace::TraceError::Host(
+        fn flush(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Err(simulator_trace::TraceError::Host(
                 "synthetic flush failure".into(),
             ))
         }
 
-        fn stop(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Ok(verilator_trace::TraceStatus {
-                state: verilator_trace::TraceState::Idle,
+        fn stop(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Ok(simulator_trace::TraceStatus {
+                state: simulator_trace::TraceState::Idle,
                 start_time_steps: 7,
                 end_time_steps: 11,
                 dump_count: 1,
@@ -1853,9 +1856,9 @@ mod tests {
     }
 
     impl TraceHost for FailingStopHost {
-        fn status(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Ok(verilator_trace::TraceStatus {
-                state: verilator_trace::TraceState::Idle,
+        fn status(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Ok(simulator_trace::TraceStatus {
+                state: simulator_trace::TraceState::Idle,
                 start_time_steps: 7,
                 end_time_steps: 7,
                 dump_count: 0,
@@ -1865,23 +1868,23 @@ mod tests {
         fn start(
             &mut self,
             path: &Path,
-        ) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
+        ) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
             std::fs::write(path, b"synthetic trace")
-                .map_err(|error| verilator_trace::TraceError::Host(error.to_string()))?;
-            Ok(verilator_trace::TraceStatus {
-                state: verilator_trace::TraceState::Active,
+                .map_err(|error| simulator_trace::TraceError::Host(error.to_string()))?;
+            Ok(simulator_trace::TraceStatus {
+                state: simulator_trace::TraceState::Active,
                 start_time_steps: 7,
                 end_time_steps: 7,
                 dump_count: 1,
             })
         }
 
-        fn flush(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
+        fn flush(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
             unreachable!()
         }
 
-        fn stop(&mut self) -> Result<verilator_trace::TraceStatus, verilator_trace::TraceError> {
-            Err(verilator_trace::TraceError::Host(
+        fn stop(&mut self) -> Result<simulator_trace::TraceStatus, simulator_trace::TraceError> {
+            Err(simulator_trace::TraceError::Host(
                 "synthetic stop failure".into(),
             ))
         }

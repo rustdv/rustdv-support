@@ -12,9 +12,13 @@ executor, phases, and simulator backends remain in `rustdv` itself.
 - [`rustdv-debug`](debug/) is the simulator-neutral request, recording, watch,
   and asynchronous simulation-control layer. It has no RustDV or VPI
   dependency.
-- [`rustdv-mcp-verilator`](mcp-verilator/) exposes those operations through a
-  loopback-only streamable-HTTP MCP server, adapts Verilator VPI handles to
-  `rustdv-debug`, and provides runtime-gated all-signal FST history.
+- [`rustdv-mcp`](mcp/) is the simulator-neutral testbench and MCP entry point.
+  Its VPI service runs unchanged on Icarus or Verilator and selects a trace
+  adapter only when the host advertises its output format.
+- [`rustdv-mcp-fst`](mcp-fst/) owns Verilator's runtime-gated FST capture,
+  decoding, and historical queries. It is separate from `rustdv-debug`.
+- [`rustdv-mcp-verilator`](mcp-verilator/) preserves the previous import path
+  for existing testbenches.
 
 The MCP transport never owns or touches a VPI handle. Worker threads submit
 bounded requests; the simulator thread services them at RustDV's settled
@@ -37,7 +41,7 @@ ReadOnly point. RustDV remains the only simulation scheduler.
 
 ## MCP tools
 
-The Verilator server exposes:
+The MCP server exposes:
 
 - `simulation_status`, `list_hierarchy`, and `read_signal`
 - `add_watch`, `list_watches`, and `remove_watch`
@@ -89,6 +93,12 @@ mode remains completely uninstrumented; recording calls return a structured
 unsupported-capability error instead of silently falling back to thousands of
 VPI reads.
 
+On Icarus, the same Rust testbench uses the selected-signal recording ring in
+`rustdv-debug`; it does not claim to provide an all-signal trace. Live reads,
+watches, pause/resume, and run-until remain available through the shared VPI
+service. A future Icarus-native trace provider can implement the same history
+operations without changing the testbench's MCP entry point.
+
 The server is intentionally unauthenticated and therefore rejects non-loopback
 bind addresses.
 
@@ -104,7 +114,7 @@ cargo test --workspace --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 ```
 
-The real integration gate requires Verilator 5.050 and a RustDV checkout with
+The real integration gate requires Verilator 5.050, Icarus, and a RustDV checkout with
 the settled service and runtime trace APIs:
 
 ```sh
@@ -112,19 +122,21 @@ RUSTDV_ROOT=/path/to/rustdv \
   bash tests/debug-control-verilator/run.sh
 ```
 
-It first proves that a FAST executable rejects recording, then drives 33 real
+It first proves that a FAST executable rejects recording, then drives real
 HTTP/MCP calls against a trace-capable build. The test covers exact time and
 predicate stops, explicit-signal projection, an internal signal unavailable
 through VPI, automatic duration limiting, history boundaries after stop,
-pause/resume/terminate, private-file cleanup, and lockfile preservation.
+pause/resume/terminate, private-file cleanup, and lockfile preservation. The
+same portable debug test also runs against Icarus with selected-signal history.
 
 ## Dependency status
 
-The workspace temporarily pins the exact head of
-[`rustdv/rustdv#10`](https://github.com/rustdv/rustdv/pull/10) because the
-required core API is not in a tagged release yet. Once that change is merged
-and released, this repository should switch to the released RustDV version
-before publishing `rustdv-mcp-verilator` to crates.io.
+The workspace temporarily pins an exact commit on `teabone113/rustdv:master`
+that includes the simulator-neutral trace API proposed in
+[`rustdv/rustdv#10`](https://github.com/rustdv/rustdv/pull/10). The pin keeps
+the support crates reproducible while that API is under upstream review.
+Once the core API is merged and released, switch to the released RustDV
+version before publishing the support crates to crates.io.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for repository boundaries and test
 requirements.

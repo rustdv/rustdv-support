@@ -651,6 +651,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "linkme"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3045e122bd98aef8ec3ad58ce84f0791f64e70163d1a02710af4aa11a4d54cc5"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77060ebe535362c3da75682cd17b0431017b6e7c5661e714fc69a7ad017d1301"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,6 +734,25 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -929,14 +968,21 @@ dependencies = [
 [[package]]
 name = "rustdv"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
+ "linkme",
+ "rustdv-cycle",
  "rustdv-gpi",
  "rustdv-macros",
  "rustdv-methodology",
  "rustdv-runner",
  "rustdv-sim",
 ]
+
+[[package]]
+name = "rustdv-cycle"
+version = "0.1.0"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 
 [[package]]
 name = "rustdv-debug"
@@ -952,6 +998,7 @@ dependencies = [
  "reqwest",
  "rustdv",
  "rustdv-debug",
+ "rustdv-mcp",
  "rustdv-mcp-verilator",
  "rustdv-vpi-stubs",
  "serde",
@@ -962,51 +1009,76 @@ dependencies = [
 [[package]]
 name = "rustdv-gpi"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
+ "num-bigint",
  "rustdv-gpi-sys",
 ]
 
 [[package]]
 name = "rustdv-gpi-sys"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 
 [[package]]
 name = "rustdv-macros"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
 
 [[package]]
-name = "rustdv-mcp-verilator"
+name = "rustdv-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
- "fst-reader",
  "reqwest",
  "rmcp",
  "rustdv",
  "rustdv-debug",
+ "rustdv-mcp-fst",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
 ]
 
 [[package]]
+name = "rustdv-mcp-fst"
+version = "0.1.0"
+dependencies = [
+ "fst-reader",
+ "rustdv",
+ "rustdv-debug",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "rustdv-mcp-verilator"
+version = "0.1.0"
+dependencies = [
+ "rustdv-mcp",
+]
+
+[[package]]
 name = "rustdv-methodology"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
+ "linkme",
  "rustdv-sim",
 ]
 
 [[package]]
 name = "rustdv-runner"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
+ "linkme",
  "rustdv-gpi",
  "rustdv-methodology",
  "rustdv-sim",
@@ -1015,7 +1087,7 @@ dependencies = [
 [[package]]
 name = "rustdv-sim"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
  "libloading",
  "rustdv-gpi",
@@ -1024,7 +1096,7 @@ dependencies = [
 [[package]]
 name = "rustdv-vpi-stubs"
 version = "0.2.0"
-source = "git+https://github.com/teabone113/rustdv.git?rev=00fa66cc7fba7176d7453f0136a5be1077129063#00fa66cc7fba7176d7453f0136a5be1077129063"
+source = "git+https://github.com/teabone113/rustdv.git?rev=259490f6aa659c6016795296d3740def24fdfce3#259490f6aa659c6016795296d3740def24fdfce3"
 dependencies = [
  "rustdv-gpi-sys",
 ]

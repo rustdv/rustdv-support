@@ -1,7 +1,7 @@
 # MCP tool reference
 
-The RustDV Verilator MCP server exposes live VPI inspection, asynchronous
-simulation control, watches, and FST-backed history through streamable HTTP.
+The RustDV MCP server exposes live VPI inspection, asynchronous simulation
+control, watches, and backend-provided history through streamable HTTP.
 
 The endpoint is printed by `McpServer::endpoint()` and normally looks like
 `http://127.0.0.1:9393/mcp`. The server accepts loopback addresses only.
@@ -210,10 +210,11 @@ retains history. No later samples are appended.
 Argument: `name` string. Removes status/history and deletes private FST
 segments. Returns `response: "removed"` with a boolean.
 
-## FST history queries
+## Trace history queries
 
-These tools require a Verilator debug session constructed with the trace
-backend. They query private closed FST segments. Successful tool results do not
+These tools require a simulator trace backend. The current Verilator backend
+queries private closed FST segments; Icarus currently reports the capability
+as unavailable. Successful tool results do not
 contain filesystem paths; a filesystem-cleanup error can include the affected
 private path for diagnosis.
 

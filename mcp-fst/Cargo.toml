@@ -1,0 +1,16 @@
+[package]
+name = "rustdv-mcp-fst"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Verilator FST history backend for the RustDV MCP service"
+readme = "README.md"
+
+[dependencies]
+fst-reader = "0.17.0"
+rustdv.workspace = true
+rustdv-debug.workspace = true
+serde.workspace = true
+tempfile = "3"

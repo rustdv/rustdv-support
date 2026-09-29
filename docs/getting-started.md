@@ -1,7 +1,8 @@
 # Getting started
 
-This guide adds a local MCP debug server to a RustDV testbench, runs it with a
-trace-capable Verilator model, and controls the simulation from an MCP client.
+This guide adds a local MCP debug server to a RustDV testbench. The same Rust
+source runs on Icarus for live debug and selected-signal history, or on a
+trace-capable Verilator model for runtime-gated all-signal FST history.
 
 The server is deliberately loopback-only and unauthenticated. Do not proxy it
 or bind it to a non-loopback address.
@@ -9,14 +10,14 @@ or bind it to a non-loopback address.
 ## Prerequisites
 
 - Rust 1.89 or newer
-- Verilator 5.050 or newer
-- RustDV with `service_read_only` and runtime Verilator trace control
-- `pkg-config` and LZ4 development files for an FST-capable build
+- Icarus Verilog or Verilator 5.050 or newer
+- RustDV with `service_read_only` and optional simulator trace control
+- `pkg-config` and LZ4 development files for a Verilator FST-capable build
 - a Unix host; the supplied build and CI paths cover Linux and macOS
 
-While the RustDV and support changes are under review, pin both Git
-dependencies to reviewed commits. Once compatible releases exist, prefer
-normal Cargo version requirements.
+While these changes are under review, pin RustDV to the compatible fork
+commit below and use a local checkout of this support branch. Once compatible
+releases exist, prefer normal Cargo version requirements.
 
 ## 1. Configure the testbench crate
 
@@ -28,16 +29,17 @@ RustDV testbenches are loaded by the simulator as a native library, so include
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rustdv = { git = "https://github.com/rustdv/rustdv.git" }
-rustdv-mcp-verilator = { git = "https://github.com/rustdv/rustdv-support.git" }
+rustdv = { git = "https://github.com/teabone113/rustdv.git", rev = "259490f6aa659c6016795296d3740def24fdfce3" }
+# Adjust this relative path to your checkout of rustdv-support.
+rustdv-mcp = { path = "../rustdv-support/mcp" }
 
 [dev-dependencies]
 # Unit-test builds need VPI symbols, but the simulator-loaded cdylib must
-# resolve the real VPI symbols from Verilator instead of linking these stubs.
-rustdv-vpi-stubs = { git = "https://github.com/rustdv/rustdv.git" }
+# resolve the real VPI symbols from the simulator instead of linking these stubs.
+rustdv-vpi-stubs = { git = "https://github.com/teabone113/rustdv.git", rev = "259490f6aa659c6016795296d3740def24fdfce3" }
 ```
 
-On macOS the native library must leave VPI symbols unresolved until Verilator
+On macOS the native library must leave VPI symbols unresolved until the simulator
 loads it. Put this in `.cargo/config.toml`:
 
 ```toml
@@ -56,10 +58,9 @@ services those requests only at settled ReadOnly points.
 
 ```rust
 use rustdv::prelude::*;
-use rustdv_mcp_verilator::{
-    run_verilator_debug_service, verilator_debug_session_with_configs,
-    DebugServiceExit, DebugSessionConfig, McpServer, McpServerConfig,
-    TraceRecordingConfig,
+use rustdv_mcp::{
+    run_debug_service, simulator_debug_session_with_config, DebugServiceExit,
+    DebugSessionConfig, McpServer, McpServerConfig,
 };
 use std::time::Duration;
 
@@ -79,16 +80,8 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
         pause_inactivity_timeout: Duration::from_secs(30),
         ..DebugSessionConfig::default()
     };
-    let trace_config = TraceRecordingConfig {
-        max_duration_steps: 100_000,
-        ..TraceRecordingConfig::default()
-    };
-    let (mut session, client) = verilator_debug_session_with_configs(
-        ctx.dut(),
-        debug_config,
-        trace_config,
-    )
-    .map_err(|error| TestError::new(error.to_string()))?;
+    let (mut session, client) = simulator_debug_session_with_config(ctx.dut(), debug_config)
+        .map_err(|error| TestError::new(error.to_string()))?;
 
     // Port 0 asks the OS for an unused loopback port.
     let server = McpServer::start(
@@ -101,7 +94,7 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
     .map_err(|error| TestError::new(error.to_string()))?;
     println!("RustDV MCP endpoint: {}", server.endpoint());
 
-    match run_verilator_debug_service(&mut session).await {
+    match run_debug_service(&mut session).await {
         DebugServiceExit::Terminated => println!("debug session terminated"),
         DebugServiceExit::ControllerDisconnected => {
             println!("debug controller disconnected; simulation released")
@@ -115,8 +108,17 @@ async fn interactive_debug(ctx: RustdvCtx) -> Result<(), TestError> {
 
 Keep `McpServer` alive for as long as the service is running. Dropping it stops
 the HTTP worker. Call `terminate_simulation` for a normal interactive shutdown.
+The testbench code above is identical for Icarus and Verilator; the runner
+selects the simulator and its trace capability.
 
-## 3. Select the Verilator build mode
+## 3. Select the simulator and build mode
+
+For Icarus, compile the HDL with `iverilog`, copy the Rust testbench library
+to a `.vpi` module, and load it with `vvp -M ... -m ...`. No trace-capable host
+is required. `start_recording` uses bounded, selected-signal sampling; the
+all-signal historical queries report that no trace backend is available.
+
+For Verilator, select the desired build policy:
 
 RustDV's Verilator host has four normal policies:
 
